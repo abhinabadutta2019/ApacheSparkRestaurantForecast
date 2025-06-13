@@ -9,6 +9,9 @@ import org.apache.spark.ml.regression.RandomForestRegressor;
 import org.apache.spark.ml.regression.RandomForestRegressionModel;
 import org.apache.spark.ml.evaluation.RegressionEvaluator;
 
+import static org.apache.spark.sql.functions.*;
+import org.apache.spark.sql.expressions.Window;
+
 public class RandomForestRunner {
     public static void main(String[] args) {
 
@@ -50,7 +53,7 @@ public class RandomForestRunner {
         RandomForestRegressionModel model = rf.fit(assembledData);
         Dataset<Row> predictions = model.transform(assembledData);
 
-        // 6. Evaluate model
+        // 6. Evaluate model (RMSE)
         RegressionEvaluator evaluator = new RegressionEvaluator()
                 .setLabelCol("Revenue")
                 .setPredictionCol("prediction")
@@ -59,10 +62,35 @@ public class RandomForestRunner {
         double rmse = evaluator.evaluate(predictions);
         System.out.println("Random Forest RMSE: " + rmse);
 
-        // 7. Show sample output
+        // 7. MAPE and Accuracy
+        Dataset<Row> mapeDF = predictions.withColumn(
+                "abs_percent_error",
+                abs(col("Revenue").minus(col("prediction")))
+                        .divide(col("Revenue"))
+                        .multiply(100)
+        );
+
+        Row mapeRow = mapeDF.agg(avg("abs_percent_error").alias("MAPE")).first();
+        double mape = mapeRow.getDouble(0);
+        double accuracy = 100.0 - mape;
+
+        System.out.println("MAPE (%): " + mape);
+        System.out.println("Estimated Accuracy (%): " + accuracy);
+
+        // 8. R² Score
+        RegressionEvaluator r2Eval = new RegressionEvaluator()
+                .setLabelCol("Revenue")
+                .setPredictionCol("prediction")
+                .setMetricName("r2");
+
+        double r2 = r2Eval.evaluate(predictions);
+        System.out.println("R² Score: " + r2);
+
+        // 9. Show sample output
+        System.out.println("Sample Predictions:");
         predictions.select("Name", "Revenue", "prediction").show(5);
 
-        // 8. Save predictions to CSV
+        // 10. Save predictions to CSV
         predictions.select("Name", "Revenue", "prediction")
                 .coalesce(1)
                 .write()
@@ -70,7 +98,7 @@ public class RandomForestRunner {
                 .option("header", "true")
                 .csv("/home/abhinaba/Downloads/Codes/RestaurantForecast/output/rf_predictions");
 
-        // 9. Stop Spark session
+        // 11. Stop Spark session
         spark.stop();
     }
 }

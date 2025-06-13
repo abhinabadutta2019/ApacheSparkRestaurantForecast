@@ -14,6 +14,9 @@ import org.apache.spark.ml.tuning.ParamGridBuilder;
 import org.apache.spark.ml.tuning.TrainValidationSplit;
 import org.apache.spark.ml.tuning.TrainValidationSplitModel;
 
+import static org.apache.spark.sql.functions.*;
+import org.apache.spark.sql.expressions.Window;
+
 public class GBTOptimizedFinal {
     public static void main(String[] args) {
 
@@ -34,11 +37,11 @@ public class GBTOptimizedFinal {
 
         // Add interaction features
         filtered = filtered
-                .withColumn("Rating_x_Budget", functions.col("Rating").multiply(functions.col("Marketing Budget")))
-                .withColumn("Ambience_x_Chef", functions.col("Ambience Score").multiply(functions.col("Chef Experience Years")));
+                .withColumn("Rating_x_Budget", col("Rating").multiply(col("Marketing Budget")))
+                .withColumn("Ambience_x_Chef", col("Ambience Score").multiply(col("Chef Experience Years")));
 
         // Log transform on revenue
-        filtered = filtered.withColumn("RevenueLog", functions.log1p(filtered.col("Revenue")));
+        filtered = filtered.withColumn("RevenueLog", log1p(col("Revenue")));
 
         // Categorical and numerical features
         String[] catCols = {"Cuisine", "Location", "Parking Availability"};
@@ -85,7 +88,7 @@ public class GBTOptimizedFinal {
         Dataset<Row> trainData = splits[0].cache();
         Dataset<Row> testData = splits[1];
 
-        // Hyperparameter grid (fast)
+        // Hyperparameter grid
         ParamMap[] paramGrid = new ParamGridBuilder()
                 .addGrid(gbt.maxDepth(), new int[]{3})
                 .addGrid(gbt.maxIter(), new int[]{40})
@@ -102,25 +105,21 @@ public class GBTOptimizedFinal {
                 .setEstimatorParamMaps(paramGrid)
                 .setTrainRatio(0.8);
 
-        // Start timing
         long start = System.currentTimeMillis();
-
         TrainValidationSplitModel model = tvs.fit(trainData);
         Dataset<Row> predictions = model.transform(testData);
-
-        // End timing
         long end = System.currentTimeMillis();
         double duration = (end - start) / 1000.0;
 
-        // Back-transform predictions to actual Revenue scale
-        predictions = predictions.withColumn("prediction_actual", functions.expm1(predictions.col("prediction")));
+        // Back-transform prediction
+        predictions = predictions.withColumn("prediction_actual", expm1(col("prediction")));
 
         // Log-scale RMSE
         double rmseLog = logEval.evaluate(predictions);
         System.out.println("Log-scale RMSE: " + rmseLog);
         System.out.println("Time taken: " + duration + " seconds");
 
-        // Actual RMSE (original Revenue scale)
+        // Actual RMSE (Revenue scale)
         RegressionEvaluator realEval = new RegressionEvaluator()
                 .setLabelCol("Revenue")
                 .setPredictionCol("prediction_actual")
@@ -128,6 +127,30 @@ public class GBTOptimizedFinal {
 
         double realRmse = realEval.evaluate(predictions);
         System.out.println("Actual RMSE (Revenue scale): " + realRmse);
+
+        // MAPE and Accuracy
+        Dataset<Row> mapeDF = predictions.withColumn(
+                "abs_percent_error",
+                abs(col("Revenue").minus(col("prediction_actual")))
+                        .divide(col("Revenue"))
+                        .multiply(100)
+        );
+
+        Row mapeRow = mapeDF.agg(avg("abs_percent_error").alias("MAPE")).first();
+        double mape = mapeRow.getDouble(0);
+        double accuracy = 100.0 - mape;
+
+        System.out.println("MAPE (%): " + mape);
+        System.out.println("Estimated Accuracy (%): " + accuracy);
+
+        // R² Score
+        RegressionEvaluator r2Eval = new RegressionEvaluator()
+                .setLabelCol("Revenue")
+                .setPredictionCol("prediction_actual")
+                .setMetricName("r2");
+
+        double r2 = r2Eval.evaluate(predictions);
+        System.out.println("R² Score: " + r2);
 
         // Export predictions
         predictions.select("Name", "Revenue", "prediction_actual")

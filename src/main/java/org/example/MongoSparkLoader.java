@@ -9,6 +9,9 @@ import org.apache.spark.ml.regression.LinearRegression;
 import org.apache.spark.ml.regression.LinearRegressionModel;
 import org.apache.spark.ml.evaluation.RegressionEvaluator;
 
+import static org.apache.spark.sql.functions.*;
+import org.apache.spark.sql.expressions.Window;
+
 public class MongoSparkLoader {
     public static void main(String[] args) {
 
@@ -61,23 +64,41 @@ public class MongoSparkLoader {
         double rmse = evaluator.evaluate(predictions);
         System.out.println("Root Mean Squared Error (RMSE): " + rmse);
 
-        // 7. Show and save predictions
+        // 7. MAPE and Accuracy
+        Dataset<Row> mapeDF = predictions.withColumn(
+                "abs_percent_error",
+                abs(col("Revenue").minus(col("prediction")))
+                        .divide(col("Revenue"))
+                        .multiply(100)
+        );
+
+        Row mapeRow = mapeDF.agg(avg("abs_percent_error").alias("MAPE")).first();
+        double mape = mapeRow.getDouble(0);
+        double accuracy = 100.0 - mape;
+
+        System.out.println("MAPE (%): " + mape);
+        System.out.println("Estimated Accuracy (%): " + accuracy);
+
+        // 8. R² Score
+        RegressionEvaluator r2Eval = new RegressionEvaluator()
+                .setLabelCol("Revenue")
+                .setPredictionCol("prediction")
+                .setMetricName("r2");
+
+        double r2 = r2Eval.evaluate(predictions);
+        System.out.println("R² Score: " + r2);
+
+        // 9. Show and save predictions
         predictions.select("Name", "features", "Revenue", "prediction").show(5);
 
-//        predictions.select("Name", "Revenue", "prediction")
-//                .coalesce(1)
-//                .write()
-//                .option("header", "true")
-//                .csv("/home/abhinaba/Downloads/Codes/RestaurantForecast/output/restaurant_predictions");
         predictions.select("Name", "Revenue", "prediction")
                 .coalesce(1)
                 .write()
-                .mode("overwrite")  // <--- Add this line
+                .mode("overwrite")
                 .option("header", "true")
                 .csv("/home/abhinaba/Downloads/Codes/RestaurantForecast/output/restaurant_predictions");
 
-
-        // 8. Stop Spark
+        // 10. Stop Spark
         spark.stop();
     }
 }
