@@ -10,7 +10,6 @@ import org.apache.spark.ml.regression.LinearRegressionModel;
 import org.apache.spark.ml.evaluation.RegressionEvaluator;
 
 import static org.apache.spark.sql.functions.*;
-import org.apache.spark.sql.expressions.Window;
 
 public class MongoSparkLoader {
     public static void main(String[] args) {
@@ -27,8 +26,6 @@ public class MongoSparkLoader {
                 .format("mongodb")
                 .option("uri", "mongodb://127.0.0.1/db_spark.collection1")
                 .load();
-
-        df.show(5); // Preview first 5 rows
 
         // 3. Prepare Data with 'Name' and ML columns
         Dataset<Row> dfWithName = df.select(
@@ -88,17 +85,20 @@ public class MongoSparkLoader {
         double r2 = r2Eval.evaluate(predictions);
         System.out.println("R² Score: " + r2);
 
-        // 9. Show and save predictions
-        predictions.select("Name", "features", "Revenue", "prediction").show(5);
+        // 9. Show predictions
+        predictions.select("Name", "Revenue", "prediction").show(5);
 
+        // 10. ✅ Save to new MongoDB collection
         predictions.select("Name", "Revenue", "prediction")
-                .coalesce(1)
                 .write()
-                .mode("overwrite")
-                .option("header", "true")
-                .csv("/home/abhinaba/Downloads/Codes/RestaurantForecast/output/restaurant_predictions");
+                .format("mongodb")
+                .mode("append")
+                .option("uri", "mongodb://127.0.0.1")
+                .option("database", "db_spark")
+                .option("collection", "predictions_linear")
+                .save();
 
-        // 10. Stop Spark
+        // 11. Stop Spark
         spark.stop();
     }
 }

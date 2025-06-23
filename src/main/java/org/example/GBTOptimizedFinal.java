@@ -3,7 +3,6 @@ package org.example;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
-import org.apache.spark.sql.functions;
 
 import org.apache.spark.ml.*;
 import org.apache.spark.ml.feature.*;
@@ -15,7 +14,6 @@ import org.apache.spark.ml.tuning.TrainValidationSplit;
 import org.apache.spark.ml.tuning.TrainValidationSplitModel;
 
 import static org.apache.spark.sql.functions.*;
-import org.apache.spark.sql.expressions.Window;
 
 public class GBTOptimizedFinal {
     public static void main(String[] args) {
@@ -31,19 +29,12 @@ public class GBTOptimizedFinal {
                 .option("uri", "mongodb://127.0.0.1/db_spark.collection1")
                 .load();
 
-        // Drop missing and filter out high-revenue outliers
         Dataset<Row> filtered = df.na().drop()
-                .filter("Revenue > 0 AND Revenue < 500000");
-
-        // Add interaction features
-        filtered = filtered
+                .filter("Revenue > 0 AND Revenue < 500000")
                 .withColumn("Rating_x_Budget", col("Rating").multiply(col("Marketing Budget")))
-                .withColumn("Ambience_x_Chef", col("Ambience Score").multiply(col("Chef Experience Years")));
+                .withColumn("Ambience_x_Chef", col("Ambience Score").multiply(col("Chef Experience Years")))
+                .withColumn("RevenueLog", log1p(col("Revenue")));
 
-        // Log transform on revenue
-        filtered = filtered.withColumn("RevenueLog", log1p(col("Revenue")));
-
-        // Categorical and numerical features
         String[] catCols = {"Cuisine", "Location", "Parking Availability"};
         String[] numCols = {
                 "Rating", "Marketing Budget", "Number of Reviews",
@@ -52,7 +43,6 @@ public class GBTOptimizedFinal {
                 "Rating_x_Budget", "Ambience_x_Chef"
         };
 
-        // Encoding categorical features
         String[] indexCols = new String[catCols.length];
         String[] oneHotCols = new String[catCols.length];
         StringIndexer[] indexers = new StringIndexer[catCols.length];
@@ -83,12 +73,10 @@ public class GBTOptimizedFinal {
                 assembler, gbt
         });
 
-        // Train/test split
         Dataset<Row>[] splits = filtered.randomSplit(new double[]{0.8, 0.2}, 42);
         Dataset<Row> trainData = splits[0].cache();
         Dataset<Row> testData = splits[1];
 
-        // Hyperparameter grid
         ParamMap[] paramGrid = new ParamGridBuilder()
                 .addGrid(gbt.maxDepth(), new int[]{3})
                 .addGrid(gbt.maxIter(), new int[]{40})
@@ -111,15 +99,12 @@ public class GBTOptimizedFinal {
         long end = System.currentTimeMillis();
         double duration = (end - start) / 1000.0;
 
-        // Back-transform prediction
         predictions = predictions.withColumn("prediction_actual", expm1(col("prediction")));
 
-        // Log-scale RMSE
         double rmseLog = logEval.evaluate(predictions);
         System.out.println("Log-scale RMSE: " + rmseLog);
         System.out.println("Time taken: " + duration + " seconds");
 
-        // Actual RMSE (Revenue scale)
         RegressionEvaluator realEval = new RegressionEvaluator()
                 .setLabelCol("Revenue")
                 .setPredictionCol("prediction_actual")
@@ -128,7 +113,6 @@ public class GBTOptimizedFinal {
         double realRmse = realEval.evaluate(predictions);
         System.out.println("Actual RMSE (Revenue scale): " + realRmse);
 
-        // MAPE and Accuracy
         Dataset<Row> mapeDF = predictions.withColumn(
                 "abs_percent_error",
                 abs(col("Revenue").minus(col("prediction_actual")))
@@ -143,7 +127,6 @@ public class GBTOptimizedFinal {
         System.out.println("MAPE (%): " + mape);
         System.out.println("Estimated Accuracy (%): " + accuracy);
 
-        // R² Score
         RegressionEvaluator r2Eval = new RegressionEvaluator()
                 .setLabelCol("Revenue")
                 .setPredictionCol("prediction_actual")
@@ -152,13 +135,16 @@ public class GBTOptimizedFinal {
         double r2 = r2Eval.evaluate(predictions);
         System.out.println("R² Score: " + r2);
 
-        // Export predictions
+        // ✅ NEW: Save predictions to separate MongoDB collection
         predictions.select("Name", "Revenue", "prediction_actual")
-                .coalesce(1)
                 .write()
-                .mode("overwrite")
-                .option("header", "true")
-                .csv("/home/abhinaba/Downloads/Codes/RestaurantForecast/output/gbt_final_log_fixed");
+                .format("mongodb")
+                .mode("append")
+                .option("database", "db_spark")
+                .option("collection", "predictions_gbt")
+                .option("uri", "mongodb://127.0.0.1")
+                .save();
+
 
         spark.stop();
     }
